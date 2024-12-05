@@ -1,0 +1,586 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Playwright Test Recorder</title>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/5.15.4/css/all.min.css" rel="stylesheet">
+    <style>
+        :root {
+            --bg-primary: #ffffff;
+            --bg-secondary: #f8f9fa;
+            --text-primary: #1a1a1a;
+            --text-secondary: #6c757d;
+            --border-color: #e9ecef;
+            --btn-hover: #f1f3f5;
+            --shadow-color: rgba(0, 0, 0, 0.1);
+        }
+
+        [data-theme="dark"] {
+            --bg-primary: #1a1a1a;
+            --bg-secondary: #2d2d2d;
+            --text-primary: #ffffff;
+            --text-secondary: #a0a0a0;
+            --border-color: #404040;
+            --btn-hover: #404040;
+            --shadow-color: rgba(0, 0, 0, 0.3);
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+            transition: background-color 0.3s, color 0.3s;
+        }
+
+        html, body {
+            width: 100%;
+            height: 100%;
+            margin: 0;
+            padding: 0;
+            overflow: hidden;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+            background-color: var(--bg-primary);
+            color: var(--text-primary);
+            display: flex;
+            flex-direction: column;
+        }
+
+        .outer-container {
+            width: 100%;
+            height: 100%;
+            display: flex;
+            flex-direction: column;
+            padding: 8px;
+        }
+
+        .container {
+            background-color: var(--bg-secondary);
+            border-radius: 12px;
+            padding: 12px;
+            box-shadow: 0 4px 6px var(--shadow-color);
+            display: flex;
+            flex-direction: column;
+            flex: 1;
+            min-height: 0;
+            gap: 12px;
+        }
+
+        .button-row {
+            display: grid;
+            grid-template-columns: 1fr 40px;
+            gap: 8px;
+            flex-shrink: 0;
+        }
+
+        .btn {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 8px;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 13px;
+            font-weight: 500;
+            transition: all 0.2s;
+            gap: 4px;
+        }
+
+        .btn-group {
+            display: flex;
+            gap: 1px;
+            background-color: #20c997;
+            border-radius: 8px;
+            overflow: hidden;
+        }
+
+        .btn-record {
+            background-color: #dc3545;
+            color: white;
+            padding: 8px 16px;
+            border-radius: 8px;
+            border: none;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 13px;
+            font-weight: 500;
+            transition: all 0.2s;
+        }
+
+        .btn-record:hover {
+            background-color: #c82333;
+        }
+
+        .btn-record.recording {
+            background-color: #0d6efd;
+        }
+
+        .btn-record.recording:hover {
+            background-color: #0b5ed7;
+        }
+
+        .btn-clear {
+            background-color: #6610f2;
+            color: white;
+        }
+
+        .btn-copy-split {
+            background-color: #20c997;
+            color: white;
+            flex: 1;
+        }
+
+        .btn-copy-dropdown {
+            background-color: #20c997;
+            color: white;
+            padding: 8px;
+            border: none;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: all 0.2s;
+            width: 32px;
+        }
+
+        .btn-copy-split:hover, .btn-copy-dropdown:hover {
+            background-color: #1ba37e;
+        }
+
+        .theme-toggle {
+            background-color: var(--bg-primary);
+            border: 1px solid var(--border-color);
+            color: var(--text-primary);
+            width: 40px;
+            height: 38px;
+            border-radius: 8px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .theme-toggle:hover {
+            background-color: var(--btn-hover);
+        }
+
+        .settings-section {
+            background-color: var(--bg-primary);
+            border-radius: 8px;
+            overflow: hidden;
+            flex-shrink: 0;
+        }
+
+        .settings-content {
+            padding: 10px;
+        }
+
+        .inner-container {
+            display: flex;
+            flex-direction: column;
+            flex: 1;
+            min-height: 0;
+            gap: 12px;
+            overflow-y: auto;
+        }
+
+        .code-section {
+            background-color: var(--bg-primary);
+            border-radius: 8px;
+            display: flex;
+            flex-direction: column;
+            min-height: 100px;
+            flex: 1;
+            overflow: hidden;
+        }
+
+        .section-title {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 10px;
+            background-color: var(--bg-secondary);
+            border-bottom: 1px solid var(--border-color);
+            border-radius: 8px 8px 0 0;
+        }
+
+        .section-title-left {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            font-size: 13px;
+            font-weight: 600;
+            color: var(--text-primary);
+        }
+
+        .section-actions {
+            display: flex;
+            gap: 8px;
+        }
+
+        .section-action-btn {
+            background: none;
+            border: none;
+            cursor: pointer;
+            padding: 4px;
+            border-radius: 4px;
+            color: var(--text-secondary);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: all 0.2s;
+            opacity: 0.7;
+        }
+
+        .section-action-btn:hover {
+            background-color: var(--btn-hover);
+            color: var(--text-primary);
+            opacity: 1;
+        }
+
+        .section-action-btn.delete:hover {
+            color: #dc3545;
+            background-color: rgba(220, 53, 69, 0.1);
+        }
+
+        .section-action-btn.copy:hover {
+            color: #20c997;
+            background-color: rgba(32, 201, 151, 0.1);
+        }
+
+        .section-action-btn i {
+            font-size: 14px;
+        }
+
+        .code-content {
+            flex: 1;
+            min-height: 0;
+            position: relative;
+            overflow: hidden;
+            padding: 8px;
+        }
+
+        .code-scroll {
+            height: 200px;
+            overflow-y: auto;
+            border: 1px solid var(--border-color);
+            border-radius: 4px;
+            background-color: var(--bg-secondary);
+        }
+
+        pre {
+            font-family: 'Fira Code', 'Consolas', monospace;
+            font-size: 12px;
+            line-height: 1.4;
+            color: var(--text-primary);
+            white-space: pre-wrap;
+            word-wrap: break-word;
+            padding: 8px;
+            margin: 0;
+        }
+
+        /* Scrollbar Styling */
+        .code-scroll::-webkit-scrollbar {
+            width: 6px;
+            height: 6px;
+        }
+
+        .code-scroll::-webkit-scrollbar-track {
+            background: var(--bg-secondary);
+            border-radius: 3px;
+        }
+
+        .code-scroll::-webkit-scrollbar-thumb {
+            background: var(--text-secondary);
+            border-radius: 3px;
+        }
+
+        .code-scroll::-webkit-scrollbar-thumb:hover {
+            background: var(--text-primary);
+        }
+
+        /* Button Styles */
+        .btn-record {
+            background-color: #dc3545;
+            color: white;
+        }
+
+        .btn-record.recording {
+            background-color: #6c757d;
+        }
+
+        .btn-clear {
+            background-color: #6610f2;
+            color: white;
+        }
+
+        .btn-copy {
+            background-color: #20c997;
+            color: white;
+        }
+
+        .btn:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 2px 4px var(--shadow-color);
+        }
+
+        .btn:active {
+            transform: translateY(0);
+            box-shadow: 0 1px 2px var(--shadow-color);
+        }
+
+        /* Switch Styling */
+        .switch {
+            position: relative;
+            display: inline-block;
+            width: 36px;
+            height: 20px;
+        }
+
+        .switch input {
+            opacity: 0;
+            width: 0;
+            height: 0;
+        }
+
+        .slider {
+            position: absolute;
+            cursor: pointer;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background-color: var(--text-secondary);
+            transition: .3s;
+            border-radius: 20px;
+        }
+
+        .slider:before {
+            position: absolute;
+            content: "";
+            height: 16px;
+            width: 16px;
+            left: 2px;
+            bottom: 2px;
+            background-color: white;
+            transition: .3s;
+            border-radius: 50%;
+        }
+
+        input:checked + .slider {
+            background-color: #20c997;
+        }
+
+        input:checked + .slider:before {
+            transform: translateX(16px);
+        }
+
+        /* Animations */
+        @keyframes pulse {
+            0% { opacity: 1; }
+            50% { opacity: 0.5; }
+            100% { opacity: 1; }
+        }
+
+        .setting-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            font-size: 13px;
+            color: var(--text-primary);
+        }
+
+        .error-message {
+            margin: 6px 0;
+            padding: 6px 10px;
+            border-radius: 6px;
+            background-color: #dc3545;
+            color: white;
+            font-size: 12px;
+            animation: slideIn 0.3s ease-out;
+        }
+
+        @keyframes slideIn {
+            from {
+                transform: translateY(-10px);
+                opacity: 0;
+            }
+            to {
+                transform: translateY(0);
+                opacity: 1;
+            }
+        }
+
+        .header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 12px;
+            position: relative;
+        }
+
+        .header-left {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .recording-badge {
+            background-color: #dc3545;
+            color: white;
+            padding: 2px 8px;
+            border-radius: 12px;
+            font-size: 11px;
+            font-weight: 500;
+            opacity: 0;
+            transform: translateX(-10px);
+            transition: all 0.3s ease;
+            display: flex;
+            align-items: center;
+            gap: 4px;
+        }
+
+        .recording-badge.active {
+            opacity: 1;
+            transform: translateX(0);
+        }
+
+        .recording-badge i {
+            color: #dc3545;
+            font-size: 8px;
+            animation: blink 1s infinite;
+        }
+
+        @keyframes blink {
+            0% { opacity: 1; }
+            50% { opacity: 0.3; }
+            100% { opacity: 1; }
+        }
+
+        .btn-record {
+            background-color: #dc3545;
+            color: white;
+            padding: 8px 16px;
+            border-radius: 8px;
+            border: none;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 13px;
+            font-weight: 500;
+            transition: all 0.2s;
+        }
+
+        .btn-record:hover {
+            background-color: #c82333;
+        }
+
+        .btn-record.recording {
+            background-color: #0d6efd;
+        }
+
+        .btn-record.recording:hover {
+            background-color: #0b5ed7;
+        }
+
+        .btn-record i {
+            font-size: 12px;
+        }
+    </style>
+</head>
+<body>
+    <div class="outer-container">
+        <div class="container">
+            <div class="header">
+                <div class="header-left">
+                    <button id="recordButton" class="btn-record">
+                        <i class="fas fa-circle"></i>
+                        <span>Start Recording</span>
+                    </button>
+                    <div id="recordingBadge" class="recording-badge">
+                        <i class="fas fa-circle"></i>
+                        <span>REC</span>
+                    </div>
+                </div>
+                <button id="themeToggle" class="theme-toggle">
+                    <i class="fas fa-moon"></i>
+                </button>
+            </div>
+
+            <div class="settings-section">
+                <div class="section-title">
+                    <div class="section-title-left">
+                        <i class="fas fa-cog"></i>
+                        Settings
+                    </div>
+                </div>
+                <div class="settings-content">
+                    <div class="setting-row">
+                        <span>Capture Hover Actions</span>
+                        <label class="switch">
+                            <input type="checkbox" id="captureHoverToggle">
+                            <span class="slider"></span>
+                        </label>
+                    </div>
+                </div>
+            </div>
+
+            <div class="inner-container">
+                <div class="code-section">
+                    <div class="section-title">
+                        <div class="section-title-left">
+                            <i class="fas fa-code"></i>
+                            Recorded Constants
+                        </div>
+                        <div class="section-actions">
+                            <button id="copyConstantsBtn" class="section-action-btn copy" title="Copy Constants">
+                                <i class="fas fa-copy"></i>
+                            </button>
+                            <button id="clearConstantsBtn" class="section-action-btn delete" title="Delete Constants">
+                                <i class="fas fa-trash-alt"></i>
+                            </button>
+                        </div>
+                    </div>
+                    <div class="code-content">
+                        <div class="code-scroll">
+                            <div id="actionsList">
+                                <pre>No constants recorded yet</pre>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="code-section">
+                    <div class="section-title">
+                        <div class="section-title-left">
+                            <i class="fas fa-file-code"></i>
+                            Playwright Java Code
+                        </div>
+                        <div class="section-actions">
+                            <button id="copyCodeBtn" class="section-action-btn copy" title="Copy Code">
+                                <i class="fas fa-copy"></i>
+                            </button>
+                            <button id="clearCodeBtn" class="section-action-btn delete" title="Delete Code">
+                                <i class="fas fa-trash-alt"></i>
+                            </button>
+                        </div>
+                    </div>
+                    <div class="code-content">
+                        <div class="code-scroll">
+                            <pre id="codeOutput">No code generated yet</pre>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    <script src="popup.js"></script>
+</body>
+</html>

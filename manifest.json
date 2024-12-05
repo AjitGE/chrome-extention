@@ -1,0 +1,29 @@
+{
+  "manifest_version": 3,
+  "name": "Playwright Test Recorder",
+  "version": "1.0",
+  "description": "Records user actions like clicks, hovers, and text input",
+  "icons": {
+    "16": "icon-16x16.png",
+    "32": "icon-32x32.png",
+    "48": "icon-48x48.png",
+    "128": "icon-192x192.png"
+  },
+  "permissions": ["activeTab", "scripting", "storage", "tabs", "sidePanel"],
+  "host_permissions": ["http://*/*", "https://*/*"],
+  "action": {
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icon-16x16.png",
+      "32": "icon-32x32.png",
+      "48": "icon-48x48.png",
+      "192": "icon-192x192.png"
+    }
+  },
+  "side_panel": {
+    "default_path": "popup.html"
+  },
+  "background": {
+    "service_worker": "background.js"
+  }
+}
