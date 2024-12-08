@@ -2,7 +2,8 @@ let isRecording = false;
 let recordedActions = [];
 let settings = {
     captureHover: false,
-    darkMode: false
+    captureBlurFocus: false,
+    darkMode: true
 };
 
 // Track pages and URLs globally
@@ -10,6 +11,10 @@ let pageMap = new Map();
 
 // Track if we should generate code
 let shouldGenerateCode = false;
+
+// Add to state object at the top
+let isAssertionMode = false;
+ const page=`this.page`
 
 document.addEventListener('DOMContentLoaded', function() {
     const recordButton = document.getElementById('recordButton');
@@ -27,24 +32,21 @@ document.addEventListener('DOMContentLoaded', function() {
     chrome.storage.local.get(['isRecording', 'recordedActions', 'settings'], function(result) {
         isRecording = result.isRecording || false;
         recordedActions = result.recordedActions || [];
-        settings = result.settings || { captureHover: false, darkMode: false };
+        settings = result.settings || {
+            captureHover: false,
+            captureBlurFocus: false,
+            darkMode: true
+        };
 
         // Update UI with stored settings
         if (document.getElementById('captureHoverToggle')) {
             document.getElementById('captureHoverToggle').checked = settings.captureHover;
         }
 
-        // Apply dark mode if enabled
-        if (settings.darkMode) {
-            document.documentElement.setAttribute('data-theme', 'dark');
-            if (themeToggle) {
-                themeToggle.innerHTML = '<i class="fas fa-sun"></i>';
-            }
-        } else {
-            document.documentElement.setAttribute('data-theme', 'light');
-            if (themeToggle) {
-                themeToggle.innerHTML = '<i class="fas fa-moon"></i>';
-            }
+        // Apply dark mode by default
+        document.documentElement.setAttribute('data-theme', settings.darkMode ? 'dark' : 'light');
+        if (themeToggle) {
+            themeToggle.innerHTML = settings.darkMode ? '<i class="fas fa-sun"></i>' : '<i class="fas fa-moon"></i>';
         }
 
         updateRecordButton();
@@ -120,7 +122,7 @@ document.addEventListener('DOMContentLoaded', function() {
         const icon = button.querySelector('i');
         if (icon) {
             const originalClass = icon.className;
-            icon.className = isCopy ? 'fas fa-check' : 'fas fa-check';
+            icon.className = isCopy ? 'fas fa-check' : 'fas fa-times';
             button.style.color = isCopy ? '#20c997' : '#dc3545';
 
             setTimeout(() => {
@@ -140,49 +142,53 @@ document.addEventListener('DOMContentLoaded', function() {
                     return;
                 }
 
-                if (tab.url.startsWith('chrome://') || tab.url.startsWith('chrome-extension://')) {
+                // If we're stopping the recording, don't check URL restrictions
+                if (isRecording) {
+                    isRecording = false;
+                    await chrome.storage.local.set({ isRecording });
+                    await chrome.runtime.sendMessage({
+                        action: "toggleRecording",
+                        isRecording: false,
+                        tabId: tab.id
+                    });
+                    updateRecordButton();
+                    return;
+                }
+
+                // Only check URL restrictions when starting recording
+                if (tab.url.startsWith('chrome://') ||
+                    tab.url.startsWith('chrome-extension://') ||
+                    tab.url.startsWith('about:') ||
+                    tab.url.startsWith('edge://')) {
                     showError('Cannot record on this page. Please try on a regular website.');
                     return;
                 }
 
-                isRecording = !isRecording;
-
+                // Start recording
+                isRecording = true;
                 try {
-                    const response = await new Promise((resolve) => {
-                        chrome.runtime.sendMessage({
-                            action: "toggleRecording",
-                            isRecording: isRecording,
-                            tabId: tab.id
-                        }, (response) => {
-                            if (chrome.runtime.lastError) {
-                                console.error('Runtime error:', chrome.runtime.lastError);
-                                resolve({ status: 'error', message: chrome.runtime.lastError.message });
-                            } else {
-                                resolve(response);
-                            }
-                        });
+                    const response = await chrome.runtime.sendMessage({
+                        action: "toggleRecording",
+                        isRecording: true,
+                        tabId: tab.id
                     });
 
-                    if (response && response.status === 'success') {
+                    if (response?.status === 'success') {
                         await chrome.storage.local.set({ isRecording });
-
-                        if (isRecording) {
-                            recordedActions = [];
-                            await chrome.storage.local.set({ recordedActions: [] });
-                            updateUI();
-                        }
+                        recordedActions = [];
+                        await chrome.storage.local.set({ recordedActions: [] });
+                        updateUI();
                     } else {
-                        isRecording = !isRecording;
-                        const errorMessage = response?.message || 'Failed to toggle recording. Please try again.';
+                        isRecording = false;
+                        const errorMessage = response?.message || 'Failed to start recording. Please try again.';
                         showError(errorMessage);
                     }
                 } catch (error) {
-                    console.error('Error sending message:', error);
-                    isRecording = !isRecording;
+                    isRecording = false;
                     showError('Failed to communicate with the extension. Please try again.');
                 }
-
                 updateRecordButton();
+
             } catch (error) {
                 console.error('Error in click handler:', error);
                 showError('An unexpected error occurred. Please try again.');
@@ -211,8 +217,9 @@ document.addEventListener('DOMContentLoaded', function() {
     // Handle settings changes
     const captureHoverToggle = document.getElementById('captureHoverToggle');
     if (captureHoverToggle) {
-        captureHoverToggle.addEventListener('change', function(e) {
-            settings.captureHover = e.target.checked;
+        captureHoverToggle.addEventListener('change', function() {
+            settings.captureHover = this.checked;
+            settings.captureBlurFocus = this.checked;
             chrome.storage.local.set({ settings });
 
             chrome.tabs.query({ active: true, currentWindow: true }, function(tabs) {
@@ -278,6 +285,7 @@ document.addEventListener('DOMContentLoaded', function() {
             actionsList.innerHTML = '<pre>No constants recorded yet</pre>';
             codeOutput.textContent = 'No code generated yet';
         } else {
+            console.log('Updating UI with recorded actions:', recordedActions);
             actionsList.innerHTML = '<pre>' + generateConstantsClass(recordedActions) + '</pre>';
             codeOutput.textContent = generatePlaywrightJavaCode(recordedActions);
         }
@@ -301,13 +309,31 @@ document.addEventListener('DOMContentLoaded', function() {
         }, 5000);
     }
 
+    const captureAssertionToggle = document.getElementById('captureAssertionToggle');
+
+    if (captureAssertionToggle) {
+        captureAssertionToggle.addEventListener('change', function() {
+            isAssertionMode = this.checked;
+
+            // Send message to content script to toggle assertion mode
+            chrome.tabs.query({ active: true, currentWindow: true }, function(tabs) {
+                if (tabs[0]) {
+                    chrome.tabs.sendMessage(tabs[0].id, {
+                        action: 'toggleAssertionMode',
+                        isAssertionMode: isAssertionMode
+                    });
+                }
+            });
+        });
+    }
+
     // ... rest of your existing code ...
 });
 
 function generateConstantsClass(actions) {
     if (actions.length === 0) return 'No constants generated yet';
 
-    let code = `public class PageConstants {\n`;
+    let code = ``;
     const constants = new Map();
 
     actions.forEach(action => {
@@ -323,21 +349,21 @@ function generateConstantsClass(actions) {
                 constantName = constantValue
                     .toUpperCase()
                     .replace(/[^A-Z0-9]+/g, '_')
-                    .replace(/^_+|_+$/g, '');
+                    .replace(/(^_+|_+$)/g, '');
                 break;
             case 'input':
                 constantValue = info.placeholder || info.label || info.name || 'input field';
                 constantName = constantValue
                     .toUpperCase()
                     .replace(/[^A-Z0-9]+/g, '_')
-                    .replace(/^_+|_+$/g, '');
+                    .replace(/(^_+|_+$)/g, '');
                 break;
             case 'select':
                 constantValue = info.label || info.name || 'dropdown';
                 constantName = constantValue
                     .toUpperCase()
                     .replace(/[^A-Z0-9]+/g, '_')
-                    .replace(/^_+|_+$/g, '');
+                    .replace(/(^_+|_+$)/g, '');
                 break;
         }
 
@@ -365,7 +391,7 @@ function generateConstantsClass(actions) {
         code += `    public static final String ${name} = "${value}";\n\n`;
     }
 
-    code += `}\n`;
+    code += `\n`;
     return code;
 }
 
@@ -390,7 +416,7 @@ function shouldTriggerCodeGeneration(action) {
 
 // Function to check if action is input type
 function isInputAction(action) {
-    if (!action || !action.type) return false;
+    if (!action?.type) return false;
     return action.type === 'search' || action.type === 'fill' || action.type === 'input';
 }
 
@@ -414,13 +440,45 @@ function addAction(action) {
     // Update the actions list
     updateActionsList();
 }
-function generatePlaywrightJavaCode(actions) {
-    if (!actions || actions.length === 0) return '';
 
-    let code = `import com.microsoft.playwright.*;\n`;
-    code += `import org.junit.jupiter.api.*;\n\n`;
-    code += `public class RecordedTest {\n`;
-    code += `    private PageController pageController;\n\n`;
+// Add this function to generate camelCase variable names
+function toCamelCase(str) {
+    // Remove special characters and extra spaces
+    str = str.replace(/[^a-zA-Z0-9 ]/g, ' ')
+        .trim()
+        .toLowerCase();
+
+    // Convert to camelCase
+    return str.split(' ')
+        .map((word, index) =>
+            index === 0 ? word : word.charAt(0).toUpperCase() + word.slice(1)
+        )
+        .join('');
+}
+
+// Update the generatePlaywrightJavaCode function
+function generatePlaywrightJavaCode(actions) {
+    if (!actions || actions.length === 0) return 'No recorded actions yet';
+
+    let code = "";
+
+    // Add variables section for input values
+    const variables = new Set();
+    actions.forEach(action => {
+        if (action.type === 'input' && action.value) {
+            const varName = toCamelCase(action.value);
+            variables.add(`    private static final String ${varName} = "${action.value}";\n`);
+        }
+    });
+
+    // Add variables to code if any exist
+    if (variables.size > 0) {
+        code += `    // Test data\n`;
+        variables.forEach(variable => {
+            code += variable;
+        });
+        code += '\n';
+    }
 
     // Reset and rebuild pageMap for each code generation
     pageMap.clear();
@@ -428,8 +486,7 @@ function generatePlaywrightJavaCode(actions) {
 
     // First pass: identify unique pages
     actions.forEach(action => {
-        if (!action || !action.pageInfo) return;
-
+        if (!action?.pageInfo) return;
         const pageNumber = action.pageInfo.pageNumber;
         const url = action.url;
 
@@ -442,135 +499,181 @@ function generatePlaywrightJavaCode(actions) {
         }
     });
 
-    // Generate page creation code
-    for (const [pageNumber, pageData] of pageMap) {
-        code += `        // Navigate to page ${pageNumber}${pageData.domain ? ` (${pageData.domain})` : ''}\n`;
-        code += `        this.pageController.getPage().navigate("${pageData.url}");\n\n`;
-    }
-
     // Generate action code
     actions.forEach(action => {
-        if (!action || !action.pageInfo || !action.elementInfo) return;
+        if (!action?.elementInfo) return;
 
-        const pageNumber = action.pageInfo.pageNumber;
+        const pageNumber = action.pageInfo?.pageNumber;
         const pageData = pageMap.get(pageNumber);
-        if (!pageData) return;
+        const elementDesc = action.elementInfo.text ||
+                          action.elementInfo.placeholder ||
+                          action.elementInfo.label ||
+                          'element';
+        // Declare variables outside switch
+        const varName = action.type === 'input' ? toCamelCase(action.value) : '';
 
-        // Add tab switch comment if we're changing tabs
-        if (currentTabNumber !== pageNumber) {
-            const domain = pageData.domain || 'unknown domain';
-            code += `        /* Switching to tab ${pageNumber} (${domain}) */\n\n`;
+        // Break down nested ternary into clearer logic
+        let files = null;
+        if (action.type === 'fileUpload') {
+            files = Array.isArray(action.value) ? action.value : [action.value];
+        }
+
+        // Add navigation if it's a new page
+        if (pageData && currentTabNumber !== pageNumber) {
+            code += `        // Recording on ${pageNumber}: with url  ${pageData.url}\n`;
             currentTabNumber = pageNumber;
         }
 
-        const info = action.elementInfo;
-        let locator = generateLocator(info);
-        const elementDesc = info.text || info.name || info.label || info.role || info.tagName || 'element';
+        // Generate code based on action type
         switch (action.type) {
             case 'click':
-                code += `        logger.info(LogBuilder.getLogLine("Clicking on \\"${elementDesc}\\""));\n`;
-                code += `        ${locator}.click();\n\n`;
+                code += `        logger.info(LogBuilder.getLogLine("Click on ${elementDesc}"));\n`;
+                code += `        ${page}.${generateSelector(action.elementInfo)}.click();\n\n`;
                 break;
-            case 'search'|| 'fill' || 'input':
-                const searchDesc = info.placeholder || info.label || info.name || 'search field';
-                code = `        logger.info(LogBuilder.getLogLine("Searching in ${searchDesc} with value \\"${action.value}\\""));\n`;
-                code = `        ${locator}.fill("${action.value}");\n\n`;
-                break;
-            case 'select':
-                const selectDesc = info.label || info.name || 'dropdown';
-                code += `        logger.info(LogBuilder.getLogLine("Selecting option \\"${action.value}\\" in ${selectDesc}"));\n`;
-                code += `        ${locator}.selectOption("${action.value}");\n\n`;
-                break;
-            case 'hover':
-                code += `        logger.info(LogBuilder.getLogLine("Hovering over \\"${elementDesc}\\""));\n`;
-                code += `        ${locator}.hover();\n\n`;
 
-            case 'keypress':
-                if (action.key) {
-                    code += `        logger.info(LogBuilder.getLogLine("Pressing ${action.key} key"));\n`;
-                    code += `        ${locator}.press("${action.key}");\n\n`;
+            case 'input':
+                code += `        logger.info(LogBuilder.getLogLine("Fill input ${elementDesc} with ${varName}"));\n`;
+                code += `        ${page}.${generateSelector(action.elementInfo)}.click();\n`;
+                code += `        ${page}.${generateSelector(action.elementInfo)}.fill(${varName});\n\n`;
+                break;
+
+            case 'select':
+                code += `        logger.info(LogBuilder.getLogLine("Select option '${action.value}' from ${elementDesc}"));\n`;
+                code += `        ${page}.${generateSelector(action.elementInfo)}.selectOption("${action.value}");\n\n`;
+                break;
+
+            case 'hover':
+                code += `        logger.info(LogBuilder.getLogLine("Hover over ${elementDesc}"));\n`;
+                code += `        ${page}.${generateSelector(action.elementInfo)}.hover();\n\n`;
+                break;
+
+            case 'rightClick':
+                code += `        logger.info(LogBuilder.getLogLine("Right click on ${elementDesc}"));\n`;
+                code += `        ${page}.${generateSelector(action.elementInfo)}.click(new ClickOptions().setButton(MouseButton.RIGHT));\n\n`;
+                break;
+
+            case 'doubleClick':
+                code += `        logger.info(LogBuilder.getLogLine("Double click on ${elementDesc}"));\n`;
+                code += `        ${page}.${generateSelector(action.elementInfo)}.dblclick();\n\n`;
+                break;
+
+            case 'fileUpload':
+                code += `        logger.info(LogBuilder.getLogLine("Upload files to ${elementDesc}"));\n`;
+                code += `        ${page}.${generateSelector(action.elementInfo)}.setInputFiles(new String[] {"${files.join('", "')}"});\n\n`;
+                break;
+
+            case 'check':
+                code += `        logger.info(LogBuilder.getLogLine("Check ${elementDesc}"));\n`;
+                code += `        ${page}.${generateSelector(action.elementInfo)}.check();\n\n`;
+                break;
+
+            case 'uncheck':
+                code += `        logger.info(LogBuilder.getLogLine("Uncheck ${elementDesc}"));\n`;
+                code += `        ${page}.${generateSelector(action.elementInfo)}.uncheck();\n\n`;
+                break;
+
+            case 'focus':
+                code += `        logger.info(LogBuilder.getLogLine("Focus on ${elementDesc}"));\n`;
+                code += `        ${page}.${generateSelector(action.elementInfo)}.focus();\n\n`;
+                break;
+
+            case 'blur':
+                code += `        logger.info(LogBuilder.getLogLine("Remove focus from ${elementDesc}"));\n`;
+                code += `        ${page}.${generateSelector(action.elementInfo)}.evaluate(element => element.blur());\n\n`;
+                break;
+
+            case 'keyPress':
+                code += `        logger.info(LogBuilder.getLogLine("Press key: ${action.value}"));\n`;
+                code += `        ${page}.keyboard().press("${action.value}");\n\n`;
+                break;
+
+            case 'assertion':
+                code += `        logger.info(LogBuilder.getLogLine("Assert ${elementDesc} is visible"));\n`;
+                code += `        assertThat(${page}.${generateSelector(action.elementInfo)}.isVisible()).isTrue();\n\n`;
+                break;
+
+            case 'dragDrop':
+                if (action.targetInfo) {
+                    code += `        logger.info(LogBuilder.getLogLine("Drag and drop ${elementDesc}"));\n`;
+                    code += `        ${page}.${generateSelector(action.elementInfo)}.dragTo(${page}.${generateSelector(action.targetInfo)});\n\n`;
                 }
                 break;
-
         }
-
     });
 
-    code += `}\n`;
+    code += `    \n\n`;
     return code;
 }
 
-function generateLocator(element) {
-    if (!element) return 'this.pageController.getPage().locator("body")';
+// Helper function to generate selector from element info
+function generateSelector(elementInfo) {
+    if (!elementInfo) return '';
 
-    const page = 'this.pageController.getPage()';
-
-    // Handle form controls with aria-label
-    if (element['aria-label']) {
-        return `${page}.getByLabel("${escapeQuotes(element['aria-label'])}")`;
+    // Try role-based selector first
+    if (elementInfo.role && elementInfo.label) {
+        return `getByRole(AriaRole.${elementInfo.role.toUpperCase()}, new GetByRoleOptions().setName("${elementInfo.label}"))`;
     }
 
-    // Handle elements with specific roles
-    if (element.role) {
-        const options = [];
-        if (element.name) options.push(`setName("${escapeQuotes(element.name)}")`);
-        if (element.placeholder) options.push(`setPlaceholder("${escapeQuotes(element.placeholder)}")`);
-
-        const roleOptions = options.length > 0
-            ? `, new Page.GetByRoleOptions().${options.join('.')}`
-            : '';
-
-        return `${page}.getByRole(AriaRole.${element.role.toUpperCase()}${roleOptions})`;
+    // Try label-based selector
+    if (elementInfo.label) {
+        return `getByLabel("${elementInfo.label}")`;
     }
 
-    // Handle elements with placeholder
-    if (element.placeholder) {
-        return `${page}.getByPlaceholder("${escapeQuotes(element.placeholder)}")`;
+    // Try placeholder-based selector
+    if (elementInfo.placeholder) {
+        return `getByPlaceholder("${elementInfo.placeholder}")`;
     }
 
-    // Handle elements with name attribute
-    if (element.name) {
-        return `${page}.locator("[name='${escapeQuotes(element.name)}']")`;
+    // Try text-based selector
+    if (elementInfo.text) {
+        return `getByText("${elementInfo.text}")`;
     }
 
-    // Rest of the locator strategies...
-    if (element.label) {
-        return `${page}.getByLabel("${escapeQuotes(element.label)}")`;
+    // Try test ID selector
+    if (elementInfo.testId) {
+        return `getByTestId("${elementInfo.testId}")`;
     }
 
-    if (element.text) {
-        return `${page}.getByText("${escapeQuotes(element.text)}")`;
+    // Fallback to CSS locator for other cases
+    if (elementInfo.id) {
+        return `locator("#${elementInfo.id}")`;
     }
 
-    if (element.testId) {
-        return `${page}.getByTestId("${escapeQuotes(element.testId)}")`;
+    if (elementInfo.type && elementInfo.tagName) {
+        return `locator("${elementInfo.tagName.toLowerCase()}[type='${elementInfo.type}']")`;
     }
 
-    if (element.title) {
-        return `${page}.getByTitle("${escapeQuotes(element.title)}")`;
+    return `locator("${elementInfo.tagName?.toLowerCase() || '*'}")`;
+}
+
+// Update generateInputSelector to use modern locators
+function generateInputSelector(elementInfo) {
+
+    if (elementInfo.tagName !== 'INPUT' && elementInfo.tagName !== 'TEXTAREA') return null;
+
+    // Try label first for form controls
+    if (elementInfo.label) {
+        return `${page}.getByLabel("${elementInfo.label}")`;
     }
 
-    if (element.alt) {
-        return `${page}.getByAltText("${escapeQuotes(element.alt)}")`;
+    // Try placeholder for input fields
+    if (elementInfo.placeholder) {
+        return `${page}.getByPlaceholder("${elementInfo.placeholder}")`;
     }
 
-    if (element.cssSelector) {
-        return `${page}.locator("${escapeQuotes(element.cssSelector)}")`;
+    // Try role with name
+    if (elementInfo.role) {
+        const options = elementInfo.label ?
+            `, new Page.GetByRoleOptions().setName("${elementInfo.label}")` : '';
+        return `${page}.getByRole(AriaRole.${elementInfo.role.toUpperCase()}${options})`;
     }
 
-    // Default fallback with multiple attributes if available
-    const attributes = [];
-    if (element.type) attributes.push(`[type="${element.type}"]`);
-    if (element.name) attributes.push(`[name="${element.name}"]`);
-    if (element.role) attributes.push(`[role="${element.role}"]`);
-    if (element['aria-label']) attributes.push(`[aria-label="${element['aria-label']}"]`);
-    if (element.placeholder) attributes.push(`[placeholder="${element.placeholder}"]`);
-
-    if (attributes.length > 0) {
-        return `${page}.locator("${element.tagName}${attributes.join('')}")`;
+    // Fallback to other selectors
+    if (elementInfo.testId) {
+        return `${page}.getByTestId("${elementInfo.testId}")`;
     }
 
-    return `${page}.locator("${element.tagName || '*'}")`;
+    return null;
 }
 
 function getDomainFromUrl(url) {
@@ -582,256 +685,4 @@ function getDomainFromUrl(url) {
     } catch (e) {
         return null;
     }
-}
-
-function generateActionCode(action) {
-    const page = 'this.pageController.getPage()';
-    const locator = generateLocator(action.element);
-    const logLine = `LogBuilder.getLogLine("${escapeQuotes(action.description)}")`;
-    const inputValue = escapeQuotes(action.value);
-
-    switch (action.type) {
-        case 'click':
-            if (action.element.type === 'text' || action.element.role === 'combobox') {
-                return `
-                    logger.info(${logLine});
-                    // Click on input field
-                    ${page}.getByRole(AriaRole.COMBOBOX${action.element['aria-label'] ? `, new Page.GetByRoleOptions().setName("${escapeQuotes(action.element['aria-label'])}")` : ''}).click();`;
-            }
-            return `logger.info(${logLine});\n${locator}.click();`;
-
-        case 'input':
-            const inputType = action.element.type || 'text';
-            const elementRole = action.element.role || '';
-
-            if (elementRole === 'combobox' || inputType === 'text') {
-                return `
-                    logger.info(${logLine});
-                    // Click and fill input field
-                    ${page}.getByRole(AriaRole.COMBOBOX${action.element['aria-label'] ? `, new Page.GetByRoleOptions().setName("${escapeQuotes(action.element['aria-label'])}")` : ''}).click();
-                    ${page}.getByRole(AriaRole.COMBOBOX${action.element['aria-label'] ? `, new Page.GetByRoleOptions().setName("${escapeQuotes(action.element['aria-label'])}")` : ''}).fill("${inputValue}");
-                    // Verify input value
-                    assertThat(${page}.getByRole(AriaRole.COMBOBOX${action.element['aria-label'] ? `, new Page.GetByRoleOptions().setName("${escapeQuotes(action.element['aria-label'])}")` : ''}).inputValue()).isEqualTo("${inputValue}");`;
-            }
-
-            switch (inputType) {
-                case 'checkbox':
-                    return `
-                        logger.info(${logLine});
-                        // Check/uncheck checkbox
-                        ${locator}.setChecked(${action.value === 'true'});
-                        // Verify checkbox state
-                        assertThat(${locator}.isChecked()).isEqualTo(${action.value === 'true'});`;
-
-                case 'radio':
-                    return `
-                        logger.info(${logLine});
-                        // Select radio option
-                        ${locator}.check();
-                        // Verify radio selection
-                        assertThat(${locator}.isChecked()).isTrue();`;
-
-                case 'select-one':
-                    return `
-                        logger.info(${logLine});
-                        // Select single option
-                        ${locator}.selectOption("${inputValue}");`;
-
-                case 'select-multiple':
-                    if (Array.isArray(action.value)) {
-                        return `
-                            logger.info(${logLine});
-                            // Select multiple options
-                            ${locator}.selectOption(new String[] {"${action.value.join('", "')}"});`;
-                    }
-                    return `
-                        logger.info(${logLine});
-                        // Select single option
-                        ${locator}.selectOption("${inputValue}");`;
-
-                case 'date':
-                    return `
-                        logger.info(${logLine});
-                        // Fill date input
-                        ${page}.getByLabel("${action.element.label || action.element.placeholder}").fill("${inputValue}");`;
-
-                case 'time':
-                    return `
-                        logger.info(${logLine});
-                        // Fill time input
-                        ${page}.getByLabel("${action.element.label || action.element.placeholder}").fill("${inputValue}");`;
-
-                case 'datetime-local':
-                    return `
-                        logger.info(${logLine});
-                        // Fill datetime input
-                        ${page}.getByLabel("${action.element.label || action.element.placeholder}").fill("${inputValue}");`;
-
-                case 'file':
-                    return `
-                        logger.info(${logLine});
-                        // Set file input
-                        ${locator}.setInputFiles("${inputValue}");`;
-
-                default:
-                    return `
-                        logger.info(${logLine});
-                        // Fill text input
-                        ${locator}.click();
-                        ${locator}.fill("${inputValue}");
-                        // Verify input value
-                        assertThat(${locator}.inputValue()).isEqualTo("${inputValue}");`;
-            }
-
-        case 'type':
-            if (action.element.role === 'combobox') {
-                return `
-                    logger.info(${logLine});
-                    // Type into combobox
-                    ${page}.getByRole(AriaRole.COMBOBOX${action.element['aria-label'] ? `, new Page.GetByRoleOptions().setName("${escapeQuotes(action.element['aria-label'])}")` : ''}).type("${inputValue}", new Locator.TypeOptions().setDelay(100));`;
-            }
-            return `
-                logger.info(${logLine});
-                // Type text with delay
-                ${locator}.type("${inputValue}", new Locator.TypeOptions().setDelay(100));`;
-
-        case 'select':
-            if (action.element.multiple) {
-                return `
-                    logger.info(${logLine});
-                    // Select multiple options
-                    ${page}.getByLabel("${action.element.label || action.element.name}").selectOption(new String[] {"${action.value.join('", "')}"});`;
-            }
-            return `
-                logger.info(${logLine});
-                // Select single option
-                ${page}.getByLabel("${action.element.label || action.element.name}").selectOption("${escapeQuotes(action.value)}");`;
-
-        case 'hover':
-            return `logger.info(${logLine});\n${locator}.hover();`;
-
-        case 'dragdrop':
-            const targetLocator = generateLocator(action.targetElement);
-            return `
-                logger.info(${logLine});
-                // Perform drag and drop
-                ${locator}.dragTo(${targetLocator});`;
-
-        case 'keypress':
-            return `
-                logger.info(${logLine});
-                // Press key: ${action.key}
-                ${locator}.press("${action.key}");`;
-
-        case 'dblclick':
-            return `logger.info(${logLine});\n${locator}.dblclick();`;
-
-        case 'rightclick':
-            return `
-                logger.info(${logLine});
-                // Right click
-                ${locator}.click(new Locator.ClickOptions().setButton(MouseButton.RIGHT));`;
-
-        case 'focus':
-            return `logger.info(${logLine});\n${locator}.focus();`;
-
-        case 'blur':
-            return `logger.info(${logLine});\n${locator}.evaluate(element => element.blur());`;
-
-        case 'clear':
-            return `logger.info(${logLine});\n${locator}.clear();`;
-
-        case 'submit':
-            return `
-                logger.info(${logLine});
-                // Submit form
-                ${locator}.evaluate(form => form.submit());`;
-
-        default:
-            return `logger.info("Unsupported action: ${action.type}");`;
-    }
-}
-
-function generateInputElementCode(element, value) {
-    const page = 'this.pageController.getPage()';
-    const locator = generateLocator(element);
-    const inputType = element.type || 'text';
-    const elementDescription = element.description || 'input field';
-    const logLine = `LogBuilder.getLogLine("Interacting with ${elementDescription}")`;
-
-    switch (inputType) {
-        case 'text':
-        case 'email':
-        case 'password':
-        case 'search':
-        case 'tel':
-        case 'url':
-        case 'number':
-            return `
-                logger.info(${logLine});
-                // Clear and fill ${inputType} input
-                ${locator}.clear();
-                ${locator}.fill("${escapeQuotes(value)}");
-                // Verify input value
-                assertThat(${locator}.inputValue()).isEqualTo("${escapeQuotes(value)}");`;
-
-        case 'checkbox':
-            return `
-                logger.info(${logLine});
-                // Set checkbox state
-                ${locator}.setChecked(${value === true || value === 'true'});
-                // Verify checkbox state
-                assertThat(${locator}.isChecked()).isEqualTo(${value === true || value === 'true'});`;
-
-        case 'radio':
-            return `
-                logger.info(${logLine});
-                // Select radio option
-                ${locator}.check();
-                // Verify radio selection
-                assertThat(${locator}.isChecked()).isTrue();`;
-
-        case 'file':
-            return `
-                logger.info(${logLine});
-                // Set file input
-                ${locator}.setInputFiles(new Path[] {Paths.get("${escapeQuotes(value)}")});`;
-
-        case 'date':
-        case 'datetime-local':
-        case 'month':
-        case 'time':
-        case 'week':
-            return `
-                logger.info(${logLine});
-                // Set date/time input
-                ${locator}.fill("${escapeQuotes(value)}");
-                // Verify date/time value
-                assertThat(${locator}.inputValue()).isEqualTo("${escapeQuotes(value)}");`;
-
-        case 'color':
-            return `
-                logger.info(${logLine});
-                // Set color input
-                ${locator}.fill("${escapeQuotes(value)}");`;
-
-        case 'range':
-            return `
-                logger.info(${logLine});
-                // Set range input
-                ${locator}.fill("${value}");
-                // Verify range value
-                assertThat(${locator}.inputValue()).isEqualTo("${value}");`;
-
-        default:
-            return `
-                logger.info(${logLine});
-                // Handle unknown input type: ${inputType}
-                ${locator}.fill("${escapeQuotes(value)}");`;
-    }
-}
-
-function escapeQuotes(str) {
-    if (str === null || str === undefined) return '';
-    return str.toString().replace(/"/g, '\\"');
 }

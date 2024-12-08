@@ -2,6 +2,7 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Playwright Test Recorder</title>
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/5.15.4/css/all.min.css" rel="stylesheet">
     <style>
@@ -264,10 +265,12 @@
             position: relative;
             overflow: hidden;
             padding: 8px;
+            display: flex;
+            flex-direction: column;
         }
 
         .code-scroll {
-            height: 200px;
+            flex: 1;
             overflow-y: auto;
             border: 1px solid var(--border-color);
             border-radius: 4px;
@@ -306,20 +309,6 @@
         }
 
         /* Button Styles */
-        .btn-record {
-            background-color: #dc3545;
-            color: white;
-        }
-
-        .btn-record.recording {
-            background-color: #6c757d;
-        }
-
-        .btn-clear {
-            background-color: #6610f2;
-            color: white;
-        }
-
         .btn-copy {
             background-color: #20c997;
             color: white;
@@ -463,36 +452,41 @@
             100% { opacity: 1; }
         }
 
-        .btn-record {
-            background-color: #dc3545;
-            color: white;
-            padding: 8px 16px;
-            border-radius: 8px;
+        .visually-hidden {
+            position: absolute;
+            width: 1px;
+            height: 1px;
+            padding: 0;
+            margin: -1px;
+            overflow: hidden;
+            clip: rect(0, 0, 0, 0);
+            border: 0;
+        }
+
+        .btn-icon {
+            background: none;
             border: none;
+            color: var(--text-primary);
             cursor: pointer;
-            display: flex;
-            align-items: center;
-            gap: 8px;
-            font-size: 13px;
-            font-weight: 500;
+            padding: 4px 8px;
+            border-radius: 4px;
             transition: all 0.2s;
         }
 
-        .btn-record:hover {
-            background-color: #c82333;
+        .btn-icon:hover {
+            background-color: var(--btn-hover);
+            color: #20c997;
         }
 
-        .btn-record.recording {
-            background-color: #0d6efd;
+        .btn-icon i {
+            font-size: 16px;
         }
 
-        .btn-record.recording:hover {
-            background-color: #0b5ed7;
+        .btn-icon.active {
+            color: #20c997;
+            background-color: rgba(32, 201, 151, 0.1);
         }
 
-        .btn-record i {
-            font-size: 12px;
-        }
     </style>
 </head>
 <body>
@@ -509,7 +503,7 @@
                         <span>REC</span>
                     </div>
                 </div>
-                <button id="themeToggle" class="theme-toggle">
+                <button id="themeToggle" class="theme-toggle" title="Toggle Theme">
                     <i class="fas fa-moon"></i>
                 </button>
             </div>
@@ -523,9 +517,18 @@
                 </div>
                 <div class="settings-content">
                     <div class="setting-row">
-                        <span>Capture Hover Actions</span>
+                        <span>Capture Hover/Blur/Focus Actions</span>
                         <label class="switch">
+                            <label for="captureHoverToggle" class="visually-hidden">Capture Hover/Blur/Focus Actions</label>
                             <input type="checkbox" id="captureHoverToggle">
+                            <span class="slider"></span>
+                        </label>
+                    </div>
+                    <div class="setting-row" style="margin-top: 8px;">
+                        <span>Capture Assertion</span>
+                        <label class="switch">
+                            <label for="captureAssertionToggle" class="visually-hidden">Capture Assertion</label>
+                            <input type="checkbox" id="captureAssertionToggle">
                             <span class="slider"></span>
                         </label>
                     </div>

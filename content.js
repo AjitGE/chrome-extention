@@ -7,13 +7,15 @@ const state = {
     isContextValid: true,
     lastHoverTarget: null,
     settings: {
-        captureHover: false
-    }
+        captureHover: false,
+        captureBlurFocus: false
+    },
+    currentInput: {
+        element: null,
+        value: null
+    },
+    isAssertionMode: false
 };
-
-// Tracking maps
-const recentActions = new Map();
-const inputTracker = new Map();
 
 // Define supported ARIA roles
 const supportedAriaRoles = new Set([
@@ -66,10 +68,25 @@ document.addEventListener('keydown', handleKeyDown);
 
 // Handle extension context invalidation
 function handleContextInvalidated() {
+    if (!state.isContextValid) return; // Prevent multiple invalidations
+
     state.isContextValid = false;
     state.isRecording = false;
+    state.processingAction = false;
+
+    console.log('Extension context invalidated, stopping recording');
     removeAllListeners();
-    console.log('Extension context invalidated, recording stopped');
+
+    // Try to notify the popup if possible
+    try {
+        chrome.runtime.sendMessage({
+            action: 'contextInvalidated'
+        }).catch(() => {
+            // Ignore errors here as the context is already invalid
+        });
+    } catch (e) {
+        // Ignore errors when trying to send the message
+    }
 }
 
 // Store event listener references for cleanup
@@ -99,12 +116,20 @@ function addTrackedListener(element, eventType, handler, options) {
 
 // Function to remove all event listeners
 function removeAllListeners() {
-    for (const [eventType, listeners] of eventListeners) {
-        for (const { element, handler, options } of listeners) {
-            element.removeEventListener(eventType, handler, options);
+    try {
+        for (const [eventType, listeners] of eventListeners) {
+            for (const { element, handler, options } of listeners) {
+                try {
+                    element.removeEventListener(eventType, handler, options);
+                } catch (error) {
+                    console.log(`Failed to remove listener for ${eventType}:`, error);
+                }
+            }
         }
+        eventListeners.clear();
+    } catch (error) {
+        console.log('Error cleaning up listeners:', error);
     }
-    eventListeners.clear();
 }
 
 // Function to safely send messages
@@ -123,77 +148,113 @@ async function sendMessageSafely(message) {
 // Function to get unique selector for an element
 function getUniqueSelector(element) {
     try {
-        // Handle null or invalid element
-        if (!element || !element.nodeType || element.nodeType !== 1) {
+        if (!element?.nodeType || element.nodeType !== 1) {
             return `unknown-element-${Date.now()}`;
         }
 
-        // 1. Try text content for buttons and links (most reliable for interactive elements)
-        if ((element.tagName === 'BUTTON' || element.tagName === 'A') && element.textContent?.trim()) {
-            return `text="${element.textContent.trim()}"`;
+        const strategies = [
+            getTextContentSelector,
+            getIdSelector,
+            getDataTestIdSelector,
+            getRoleWithTextContentSelector,
+            getAriaLabelSelector,
+            getPlaceholderSelector,
+            getNameSelector,
+            getRoleSelector,
+            getClassSelector,
+            getXPathSelector
+        ];
+
+        for (const strategy of strategies) {
+            const selector = strategy(element);
+            if (selector) return selector;
         }
 
-        // 2. Try ID (very reliable if present)
-        if (element.id) {
-            return `#${element.id}`;
-        }
-
-        // 3. Try data-testid (commonly used for testing)
-        if (element.dataset?.testid) {
-            return `[data-testid="${element.dataset.testid}"]`;
-        }
-
-        // 4. Try role with text content (good for accessibility and uniqueness)
-        const role = element.getAttribute('role') || getImplicitRole(element);
-        if (role && supportedAriaRoles.has(role.toLowerCase()) && element.textContent?.trim()) {
-            return `role=${role}[name="${element.textContent.trim()}"]`;
-        }
-
-        // 5. Try aria-label (good for accessibility)
-        if (element.getAttribute('aria-label')) {
-            return `[aria-label="${element.getAttribute('aria-label')}"]`;
-        }
-
-        // 6. Try placeholder for inputs (common for form fields)
-        if (element.placeholder) {
-            return `[placeholder="${element.placeholder}"]`;
-        }
-
-        // 7. Try name attribute for form elements
-        if (element.name) {
-            return `[name="${element.name}"]`;
-        }
-
-        // 8. Try role only if available
-        if (role && supportedAriaRoles.has(role.toLowerCase())) {
-            return `role=${role}`;
-        }
-
-        // 9. Try class if it's simple and unique
-        if (element.className && typeof element.className === 'string' && !element.className.includes(' ')) {
-            try {
-                // Check if this class is unique in the document
-                const elementsWithClass = document.getElementsByClassName(element.className);
-                if (elementsWithClass.length === 1) {
-                    return `.${element.className}`;
-                }
-            } catch (error) {
-                console.error('Error checking class uniqueness:', error);
-            }
-        }
-
-        // 10. Fallback to XPath as last resort
-        const xpath = generateXPath(element);
-        if (xpath) {
-            return xpath;
-        }
-
-        // Ultimate fallback
         return `${element.tagName.toLowerCase()}[${Math.floor(Math.random() * 10000)}]`;
     } catch (error) {
         console.error('Error getting unique selector:', error);
         return `fallback-selector-${Date.now()}`;
     }
+}
+
+function getTextContentSelector(element) {
+    if ((element.tagName === 'BUTTON' || element.tagName === 'A') && element.textContent?.trim()) {
+        return `text="${element.textContent.trim()}"`;
+    }
+    return null;
+}
+
+function getIdSelector(element) {
+    if (element.id) {
+        return `#${element.id}`;
+    }
+    return null;
+}
+
+function getDataTestIdSelector(element) {
+    if (element.dataset?.testid) {
+        return `[data-testid="${element.dataset.testid}"]`;
+    }
+    return null;
+}
+
+function getRoleWithTextContentSelector(element) {
+    const role = element.getAttribute('role') || getImplicitRole(element);
+    if (role && supportedAriaRoles.has(role.toLowerCase()) && element.textContent?.trim()) {
+        return `role=${role}[name="${element.textContent.trim()}"]`;
+    }
+    return null;
+}
+
+function getAriaLabelSelector(element) {
+    if (element.getAttribute('aria-label')) {
+        return `[aria-label="${element.getAttribute('aria-label')}"]`;
+    }
+    return null;
+}
+
+function getPlaceholderSelector(element) {
+    if (element.placeholder) {
+        return `[placeholder="${element.placeholder}"]`;
+    }
+    return null;
+}
+
+function getNameSelector(element) {
+    if (element.name) {
+        return `[name="${element.name}"]`;
+    }
+    return null;
+}
+
+function getRoleSelector(element) {
+    const role = element.getAttribute('role') || getImplicitRole(element);
+    if (role && supportedAriaRoles.has(role.toLowerCase())) {
+        return `role=${role}`;
+    }
+    return null;
+}
+
+function getClassSelector(element) {
+    if (element.className && typeof element.className === 'string' && !element.className.includes(' ')) {
+        try {
+            const elementsWithClass = document.getElementsByClassName(element.className);
+            if (elementsWithClass.length === 1) {
+                return `.${element.className}`;
+            }
+        } catch (error) {
+            console.error('Error checking class uniqueness:', error);
+        }
+    }
+    return null;
+}
+
+function getXPathSelector(element) {
+    const xpath = generateXPath(element);
+    if (xpath) {
+        return xpath;
+    }
+    return null;
 }
 
 // Function to get implicit ARIA role
@@ -245,12 +306,10 @@ function getInputRole(element) {
 // Function to generate unique XPath
 function generateXPath(element) {
     try {
-        // Handle null or invalid element
-        if (!element || !element.nodeType || element.nodeType !== 1) {
+        if (!isValidElement(element)) {
             return null;
         }
 
-        // Handle document body
         if (element === document.body) {
             return '/html/body';
         }
@@ -258,48 +317,48 @@ function generateXPath(element) {
         let path = '';
         let current = element;
 
-        while (current && current !== document.body && current.parentNode) {
-            let selector = current.tagName.toLowerCase();
+        while (isValidElement(current) && current !== document.body) {
+            const selector = getElementSelector(current);
+            if (!selector) break;
 
-            // Get parent node safely
-            const parent = current.parentNode;
-            if (!parent || !parent.children) {
-                // If we can't get parent or its children, break the loop
-                break;
-            }
-
-            // Get siblings safely
-            const siblings = Array.from(parent.children).filter(child =>
-                child.tagName === current.tagName
-            );
-
-            // Add index if there are multiple siblings with same tag
-            if (siblings.length > 1) {
-                const index = siblings.indexOf(current) + 1;
-                selector += `[${index}]`;
-            }
-
-            // Add identifying attributes if available
-            if (current.id) {
-                selector += `[@id="${current.id}"]`;
-            } else if (current.className && typeof current.className === 'string') {
-                const classes = current.className.trim().split(/\s+/);
-                if (classes.length > 0) {
-                    selector += `[contains(@class, "${classes[0]}")]`;
-                }
-            }
-
-            // Build path
             path = selector + (path ? '/' + path : '');
-            current = parent;
+            current = current.parentNode;
         }
 
         return path ? '//' + path : null;
     } catch (error) {
         console.error('Error generating XPath:', error);
-        // Return a basic unique selector as fallback
         return `//${element.tagName.toLowerCase()}[${Math.floor(Math.random() * 10000)}]`;
     }
+}
+
+function isValidElement(element) {
+    return element && element.nodeType === 1;
+}
+
+function getElementSelector(element) {
+    const tagName = element.tagName.toLowerCase();
+    const parent = element.parentNode;
+    if (!parent?.children) return null;
+
+    const siblings = Array.from(parent.children).filter(child => child.tagName === element.tagName);
+    let selector = tagName;
+
+    if (siblings.length > 1) {
+        const index = siblings.indexOf(element) + 1;
+        selector += `[${index}]`;
+    }
+
+    if (element.id) {
+        selector += `[@id="${element.id}"]`;
+    } else if (element.className && typeof element.className === 'string') {
+        const classes = element.className.trim().split(/\s+/);
+        if (classes.length > 0) {
+            selector += `[contains(@class, "${classes[0]}")]`;
+        }
+    }
+
+    return selector;
 }
 
 // Function to find closest interactive parent
@@ -325,9 +384,23 @@ function findInteractiveParent(element) {
 
 // Function to get element information
 function getElementInfo(element) {
-    if (!element || !element.tagName) return null;
+    if (!element?.tagName) return null;
 
-    const info = {
+    const info = initializeElementInfo(element);
+
+    if (!['INPUT', 'SELECT', 'TEXTAREA'].includes(element.tagName)) {
+        info.text = element.textContent?.trim() || null;
+    }
+
+    handleSvgElements(element, info);
+    info.label = getLabel(element) || getAriaLabel(element) || getAriaLabelledBy(element) || getValueOrPlaceholder(element);
+    info.name = getNameForButtonOrLink(element);
+
+    return info;
+}
+
+function initializeElementInfo(element) {
+    return {
         tagName: element.tagName,
         id: element.id || null,
         className: element.className || null,
@@ -341,13 +414,9 @@ function getElementInfo(element) {
         title: element.getAttribute('title') || null,
         testId: element.getAttribute('data-testid') || null
     };
+}
 
-    // Get text content for non-form elements
-    if (!['INPUT', 'SELECT', 'TEXTAREA'].includes(element.tagName)) {
-        info.text = element.textContent?.trim() || null;
-    }
-
-    // Handle SVG elements with interactive parent
+function handleSvgElements(element, info) {
     if (element.tagName === 'svg' || element.closest('svg')) {
         const svgElement = element.tagName === 'svg' ? element : element.closest('svg');
         const parent = svgElement.parentElement;
@@ -359,122 +428,115 @@ function getElementInfo(element) {
                 role: svgElement.getAttribute('role') || null
             };
 
-            // Use parent's attributes for better targeting
             info.role = parent.getAttribute('role') || info.role;
             info.text = parent.textContent?.trim() || info.text;
             info.testId = parent.getAttribute('data-testid') || info.testId;
             info.title = parent.getAttribute('title') || info.title;
         }
     }
+}
 
-    // Get associated label text
+function getLabel(element) {
     const labelElement = element.tagName === 'INPUT' || element.tagName === 'SELECT' || element.tagName === 'TEXTAREA' ?
         element.labels?.[0] || document.querySelector(`label[for="${element.id}"]`) : null;
 
-    if (labelElement) {
-        info.label = labelElement.textContent?.trim() || null;
-    }
+    return labelElement ? labelElement.textContent?.trim() || null : null;
+}
 
-    // Get aria-label if available
-    if (!info.label) {
-        info.label = element.getAttribute('aria-label') || null;
-    }
+function getAriaLabel(element) {
+    return element.getAttribute('aria-label') || null;
+}
 
-    // For form controls, also check for aria-labelledby
-    if (!info.label && (element.tagName === 'INPUT' || element.tagName === 'SELECT' || element.tagName === 'TEXTAREA')) {
+function getAriaLabelledBy(element) {
+    if (element.tagName === 'INPUT' || element.tagName === 'SELECT' || element.tagName === 'TEXTAREA') {
         const labelledBy = element.getAttribute('aria-labelledby');
         if (labelledBy) {
             const labelElement = document.getElementById(labelledBy);
-            if (labelElement) {
-                info.label = labelElement.textContent?.trim() || null;
-            }
+            return labelElement ? labelElement.textContent?.trim() || null : null;
         }
     }
+    return null;
+}
 
-    // Check for value and placeholder
-    if (!info.label && (element.tagName === 'INPUT' || element.tagName === 'SELECT' || element.tagName === 'TEXTAREA')) {
-        info.label = element.value || element.placeholder || null;
+function getValueOrPlaceholder(element) {
+    if (element.tagName === 'INPUT' || element.tagName === 'SELECT' || element.tagName === 'TEXTAREA') {
+        return element.value || element.placeholder || null;
     }
+    return null;
+}
 
-    // Get name from aria-label or title for buttons and links
-    if (!info.name && (element.tagName === 'BUTTON' || (element.tagName === 'A' && element.href))) {
-        info.name = element.getAttribute('aria-label') || element.title || element.textContent?.trim() || null;
+function getNameForButtonOrLink(element) {
+    if (element.tagName === 'BUTTON' || (element.tagName === 'A' && element.href)) {
+        return element.getAttribute('aria-label') || element.title || element.textContent?.trim() || null;
     }
-
-    return info;
+    return null;
 }
 
 // Function to get current page information
 async function getPageInfo() {
+    if (!state.isContextValid) {
+        console.log('Extension context is invalid, skipping page info request');
+        return null;
+    }
+
     try {
-        const response = await chrome.runtime.sendMessage({ action: 'getPageInfo' });
+        const response = await chrome.runtime.sendMessage({
+            action: 'getPageInfo',
+            timestamp: Date.now() // Add timestamp for debugging
+        });
+
+        if (!response?.pageInfo) {
+            console.warn('Invalid page info response:', response);
+            return null;
+        }
+
         return response.pageInfo;
     } catch (error) {
-        console.error('Error getting page info:', error);
-        return { pageNumber: 0 };
+        if (error.message.includes('Extension context invalidated')) {
+            handleContextInvalidated();
+        } else {
+            console.error('Error getting page info:', error);
+        }
+        return null;
     }
 }
 
 // Function to record an action with deduplication
 async function recordAction(type, event, value = null) {
-    if (!state.isContextValid || !state.isRecording || state.processingAction) return;
+    if (!state.isContextValid || !state.isRecording || state.processingAction) {
+        console.log('Skipping action recording:', {
+            contextValid: state.isContextValid,
+            recording: state.isRecording,
+            processing: state.processingAction
+        });
+        return;
+    }
 
     state.processingAction = true;
     try {
-        const timestamp = Date.now();
         const target = event.target;
-
-        // Validate target element
-        if (!target || !target.nodeType || target.nodeType !== 1) {
-            console.warn('Invalid target element:', target);
-            return;
-        }
-
-        // Create a unique key for the action
-        const actionKey = `${type}-${generateXPath(target) || target.tagName}-${value || ''}-${Math.floor(timestamp/500)}`;
-
-        // Check if we've recorded this action recently
-        if (recentActions.has(actionKey)) {
-            console.log('Duplicate action detected, skipping:', actionKey);
-            return;
-        }
-
-        // Get element information
         const elementInfo = getElementInfo(target);
-        if (!elementInfo) {
-            console.warn('Could not get element information');
+        const pageInfo = await getPageInfo();
+
+        // Skip if we couldn't get page info
+        if (!pageInfo) {
+            console.warn('Skipping action recording - no page info available');
             return;
         }
-
-        // Get page information from background script
-        const pageInfo = await new Promise((resolve) => {
-            chrome.runtime.sendMessage({ action: 'getPageInfo' }, (response) => {
-                resolve(response?.pageInfo || { pageNumber: 0 });
-            });
-        });
 
         const action = {
             type,
-            timestamp,
+            timestamp: Date.now(),
             elementInfo,
             value,
             pageInfo,
             url: window.location.href
         };
 
-        console.log('Recording action:', action);
-
-        // Store in recent actions map with expiration
-        recentActions.set(actionKey, timestamp);
-        setTimeout(() => recentActions.delete(actionKey), 500);
-
-        // Send to background script
         await sendMessageSafely({
             type: 'actionRecorded',
             action
         });
-
-        console.log('Action recorded successfully:', action);
     } catch (error) {
         console.error('Error recording action:', error);
     } finally {
@@ -487,24 +549,8 @@ async function handleInputCompletion(event) {
     const target = event.target;
     if (!state.isRecording || !target || !['INPUT', 'TEXTAREA'].includes(target.tagName)) return;
 
-    const initialValue = inputTracker.get(target);
-    const currentValue = target.value;
-
-    // Only record if the value has changed from its initial state
-    if (initialValue !== currentValue) {
-        console.log('Input completed:', { initial: initialValue, current: currentValue });
-        await recordAction('input', event, currentValue);
-        inputTracker.delete(target); // Clear the tracker for this input
-    }
-}
-
-// Function to handle pending input values
-async function handlePendingInputs(excludeElement = null) {
-    const inputs = Array.from(document.querySelectorAll('input, textarea'));
-    for (const input of inputs) {
-        if (input !== excludeElement && inputTracker.has(input)) {
-            await handleInputCompletion({ target: input });
-        }
+    if (target.value) {
+        await recordAction('input', event, target.value);
     }
 }
 
@@ -512,13 +558,23 @@ async function handlePendingInputs(excludeElement = null) {
 addTrackedListener(document, 'click', async (event) => {
     if (!state.isRecording) return;
 
-    const target = event.target;
-    const isFormElement = ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName) && target.type !== 'submit';
-
-    if (!isFormElement) {
-        await handlePendingInputs();
-        await recordAction('click', event);
+    if (state.isAssertionMode) {
+        await recordAction('assertion', event);
+        state.isAssertionMode = false;
+        chrome.runtime.sendMessage({ action: 'assertionCaptured' });
+        return;
     }
+
+    // Record input value if clicking away from input field
+    if (state.currentInput.element &&
+        event.target !== state.currentInput.element &&
+        state.currentInput.value) {
+        await recordAction('input', { target: state.currentInput.element }, state.currentInput.value);
+        console.log('Input value recorded on click away:', state.currentInput.value);
+        state.currentInput = { element: null, value: null };
+    }
+
+    await recordAction('click', event);
 }, { capture: true, passive: true });
 
 // Handle hover events
@@ -526,10 +582,8 @@ addTrackedListener(document, 'mouseover', async (event) => {
     if (!state.isRecording || !state.settings.captureHover) return;
     const target = event.target;
 
-    // Skip hover recording for form elements and small movements
     if (['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName)) return;
 
-    // Create a debounced hover recording
     if (state.lastHoverTarget !== target) {
         state.lastHoverTarget = target;
         await recordAction('hover', event);
@@ -571,28 +625,15 @@ addTrackedListener(document, 'input', async (event) => {
     if (!state.isRecording) return;
     const target = event.target;
 
-    if (['INPUT', 'TEXTAREA'].includes(target.tagName)) {
-        inputTracker.set(target, target.value);
-        console.log('Input tracked:', target.value);
-        const initialValue = inputTracker.get(target);
-    const currentValue = target.value;
+    if (!['INPUT', 'TEXTAREA'].includes(target.tagName)) return;
 
-    // Only record if the value has changed from its initial state
-    if (initialValue !== currentValue) {
-        await recordAction('input', event, currentValue);
-        inputTracker.delete(target); // Clear the tracker for this input
-    }
-    }
+    // Only store the value, don't record action yet
+    state.currentInput = {
+        element: target,
+        value: target.value
+    };
+    console.log('Input value stored:', target.value);
 }, { capture: true, passive: true });
-
-async function handlePendingInputs(excludeElement = null) {
-    const inputs = Array.from(document.querySelectorAll('input'));
-    for (const input of inputs) {
-        if (input !== excludeElement && inputTracker.has(input)) {
-            await handleInputCompletion({ target: input });
-        }
-    }
-}
 
 addTrackedListener(document, 'change', async (event) => {
     if (!state.isRecording) return;
@@ -604,40 +645,53 @@ addTrackedListener(document, 'change', async (event) => {
     }
 }, { capture: true, passive: true });
 
-addTrackedListener(document, 'focus', (event) => {
-    if (!state.isRecording) return;
-    const target = event.target;
-
-    if (['INPUT', 'TEXTAREA'].includes(target.tagName)) {
-        inputTracker.set(target, target.value);
-        console.log('Focus tracked:', target.value);
-    }
+addTrackedListener(document, 'focus', async (event) => {
+    if (!state.isRecording || !state.settings.captureBlurFocus) return;
+    await recordAction('focus', event);
 }, { capture: true, passive: true });
 
 addTrackedListener(document, 'blur', async (event) => {
-    if (!state.isRecording) return;
+    if (!state.isRecording || !state.settings.captureBlurFocus) return;
     const target = event.target;
 
-    if (['INPUT', 'TEXTAREA'].includes(target.tagName)) {
-        console.log('Blur event, checking input completion');
-        await handleInputCompletion(event);
+    // Record final input value if it exists
+    if (['INPUT', 'TEXTAREA'].includes(target.tagName) &&
+        state.currentInput.element === target &&
+        state.currentInput.value) {
+        await recordAction('input', event, state.currentInput.value);
+        state.currentInput.element = null;
+        state.currentInput.value = null;
     }
+
+    await recordAction('blur', event);
 }, { capture: true, passive: true });
 
 // Handle Enter key press
 document.addEventListener('keydown', async (event) => {
-    if (isRecording && event.key === 'Enter' && event.target.tagName === 'INPUT') {
-        await handleInputCompletion(event);
+    if (!state.isRecording) return;
+
+    if (event.key === 'Enter' && state.currentInput.element) {
+        // Record the final input value
+        if (state.currentInput.value) {
+            await recordAction('input', { target: state.currentInput.element }, state.currentInput.value);
+            console.log('Input value recorded on Enter:', state.currentInput.value);
+        }
+
+        // Clear the stored input state
+        state.currentInput = { element: null, value: null };
+
+        // Record the Enter key press
+        await recordAction('keypress', event, 'Enter');
     }
 }, { capture: true, passive: true });
 
 // Handle form submissions
 document.addEventListener('submit', async (event) => {
-    if (isRecording) {
+    if (state.isRecording) {
         const form = event.target;
         const inputs = Array.from(form.querySelectorAll('input'));
         for (const input of inputs) {
-            if (inputTracker.has(input)) {
+            if (input === state.currentInput.element) {
                 await handleInputCompletion({ target: input });
             }
         }
@@ -645,17 +699,19 @@ document.addEventListener('submit', async (event) => {
 }, { capture: true, passive: true });
 
 document.addEventListener('change', async (event) => {
-    if (isRecording && event.target.tagName === 'SELECT') {
+    if (state.isRecording && event.target.tagName === 'SELECT') {
         await recordAction('select', event, event.target.value);
     }
 }, { capture: true, passive: true });
 
 // Message listener with error handling
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+    let handled = false;
+
     // Handle ping message synchronously
     if (message.action === 'ping') {
         sendResponse({ status: 'pong' });
-        return false;
+        handled = true;
     }
 
     // Handle settings update
@@ -663,7 +719,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         state.settings = message.settings;
         console.log('Settings updated:', state.settings);
         sendResponse({ status: 'success' });
-        return false;
+        handled = true;
     }
 
     // Handle recording toggle synchronously
@@ -671,23 +727,104 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         try {
             state.isRecording = message.isRecording;
             console.log('Recording state changed:', state.isRecording);
-
-            if (state.isRecording) {
-                recentActions.clear();
-                inputTracker.clear();
-            }
             sendResponse({ status: 'success' });
         } catch (error) {
             console.error('Error handling toggle:', error);
             sendResponse({ status: 'error', message: error.message });
         }
-        return false;
+        handled = true;
     }
 
-    return false;
+    // Handle assertion mode
+    if (message.action === 'toggleAssertionMode') {
+        state.isAssertionMode = message.isAssertionMode;
+        console.log('Assertion mode:', state.isAssertionMode);
+    }
+
+    return handled;
 });
 
-// Handle extension unload
+// Replace the unload event listener with a more compatible solution
+// Remove this:
 window.addEventListener('unload', () => {
     removeAllListeners();
 });
+
+// Add this instead:
+function setupCleanup() {
+    try {
+        // Try using beforeunload first
+        window.addEventListener('beforeunload', () => {
+            removeAllListeners();
+        });
+    } catch (error) {
+        console.log('Could not add beforeunload listener:', error);
+    }
+
+    // Also clean up when extension context changes
+    chrome.runtime.onConnect.addListener((port) => {
+        port.onDisconnect.addListener(() => {
+            removeAllListeners();
+        });
+    });
+}
+
+// Call setupCleanup when content script loads
+setupCleanup();
+
+// Add these event listeners after existing ones
+
+// Double click
+addTrackedListener(document, 'dblclick', async (event) => {
+    if (!state.isRecording) return;
+    await recordAction('doubleClick', event);
+}, { capture: true, passive: true });
+
+// Right click
+addTrackedListener(document, 'contextmenu', async (event) => {
+    if (!state.isRecording) return;
+    await recordAction('rightClick', event);
+}, { capture: true, passive: true });
+
+// File upload
+addTrackedListener(document, 'change', async (event) => {
+    if (!state.isRecording) return;
+    const target = event.target;
+
+    if (target.type === 'file') {
+        const files = Array.from(target.files).map(file => file.name);
+        await recordAction('fileUpload', event, files);
+    }
+}, { capture: true, passive: true });
+
+// Checkbox/Radio
+addTrackedListener(document, 'change', async (event) => {
+    if (!state.isRecording) return;
+    const target = event.target;
+
+    if (target.type === 'checkbox') {
+        await recordAction(target.checked ? 'check' : 'uncheck', event);
+    } else if (target.type === 'radio') {
+        await recordAction('check', event);
+    }
+}, { capture: true, passive: true });
+
+// Clear input (detect when input is cleared)
+addTrackedListener(document, 'input', async (event) => {
+    if (!state.isRecording) return;
+    const target = event.target;
+
+    if (['INPUT', 'TEXTAREA'].includes(target.tagName) && !target.value) {
+        await recordAction('clear', event);
+    }
+}, { capture: true, passive: true });
+
+// Special keys (update existing keydown handler)
+document.addEventListener('keydown', async (event) => {
+    if (!state.isRecording) return;
+
+    const specialKeys = ['Tab', 'Escape', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'];
+    if (specialKeys.includes(event.key)) {
+        await recordAction('keyPress', event, event.key);
+    }
+}, { capture: true, passive: true });
